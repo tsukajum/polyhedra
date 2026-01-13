@@ -100,14 +100,13 @@ Nef_polyhedron make_cube(Point center, double size) {
 Nef_polyhedron make_Octahedron(Point center, double size) {
     double s = size*2;
 
-    // 6つの頂点（Z軸に上下、XY平面に正方形の4点）
     std::vector<Point> points = {
-        Point(center.x(),     center.y(),     center.z() + s), // 上 (頂点0)
-        Point(center.x(),     center.y(),     center.z() - s), // 下 (頂点1)
-        Point(center.x() + s, center.y(),     center.z()),     // 右 (頂点2)
-        Point(center.x() - s, center.y(),     center.z()),     // 左 (頂点3)
-        Point(center.x(),     center.y() + s, center.z()),     // 前 (頂点4)
-        Point(center.x(),     center.y() - s, center.z())      // 後 (頂点5)
+        Point(center.x(),     center.y(),     center.z() + s),
+        Point(center.x(),     center.y(),     center.z() - s),
+        Point(center.x() + s, center.y(),     center.z()),
+        Point(center.x() - s, center.y(),     center.z()),
+        Point(center.x(),     center.y() + s, center.z()),
+        Point(center.x(),     center.y() - s, center.z())
     };
 
     Surface_mesh mesh;
@@ -119,13 +118,10 @@ Nef_polyhedron make_Octahedron(Point center, double size) {
         mesh.add_face(vi[a], vi[b], vi[c]);
     };
 
-    // 上半球 4面
     add_face(0, 2, 4);
     add_face(0, 4, 3);
     add_face(0, 3, 5);
     add_face(0, 5, 2);
-
-    // 下半球 4面
     add_face(1, 4, 2);
     add_face(1, 3, 4);
     add_face(1, 5, 3);
@@ -368,8 +364,8 @@ void triangulate_faces_with_colors(Surface_mesh& mesh) {
 void draw_mesh(const Surface_mesh& mesh,
     const std::map<Surface_mesh::Face_index, Color>& face_colors,
     const std::map<Surface_mesh::Edge_index, Color>& edge_colors,
-    const std::set<Surface_mesh::Edge_index>& reflex_edges_set,
-    double offset_x = 0.0) {
+    const std::set<Surface_mesh::Edge_index>& reflex_edges_set)
+    {
     // draw faces
     for (auto face : mesh.faces()) {
         glBegin(GL_TRIANGLE_FAN);
@@ -378,7 +374,7 @@ void draw_mesh(const Surface_mesh& mesh,
 
         for (auto v : CGAL::vertices_around_face(mesh.halfedge(face), mesh)) {
             Point p = mesh.point(v);
-            glVertex3f(CGAL::to_double(p.x()) - offset_x,
+            glVertex3f(CGAL::to_double(p.x()),
                        CGAL::to_double(p.y()),
                        CGAL::to_double(p.z()));
         }
@@ -389,19 +385,16 @@ void draw_mesh(const Surface_mesh& mesh,
     glLineWidth(3.0f);
     glBegin(GL_LINES);
     for (auto edge : mesh.edges()) {
-        auto color = edge_colors.at(edge);   // ← クラスA〜Dごとの色を取得
+        auto color = edge_colors.at(edge);   // get color
         glColor3f(color.r, color.g, color.b);
 
-        // reflex 辺っぽい色なら太く描く
-        // （classify_edges_ver3 では淡色＝reflex なので、g成分などで判別可）
         bool isReflexEdge = reflex_edges_set.find(edge) != reflex_edges_set.end();
 
-    
         auto h = mesh.halfedge(edge);
         Point p1 = mesh.point(mesh.source(h));
         Point p2 = mesh.point(mesh.target(h));
 
-        // Reflex辺は見た目だけ手前に少しずらす
+        // reflex edge only slightly toward the front
         if (isReflexEdge) {
             auto f1 = mesh.face(h);
             auto f2 = mesh.face(mesh.opposite(h));
@@ -413,7 +406,7 @@ void draw_mesh(const Surface_mesh& mesh,
             double len = std::sqrt(CGAL::to_double(avg_n.squared_length()));
             if (len > 1e-8) avg_n = avg_n / len;
 
-            double offset = 0.1;  // 👈 この値で“浮かせる量”を調整（大きすぎるとズレる）
+            double offset = 0.1;  // lift slightly
             p1 = Point(p1.x() + avg_n.x() * offset,
                        p1.y() + avg_n.y() * offset,
                        p1.z() + avg_n.z() * offset);
@@ -422,26 +415,22 @@ void draw_mesh(const Surface_mesh& mesh,
                        p2.z() + avg_n.z() * offset);
         }
 
-        glLineWidth(isReflexEdge ? 8.0f : 3.0f); // reflexは太く
-        glVertex3f(CGAL::to_double(p1.x()) - offset_x,
+        glLineWidth(isReflexEdge ? 8.0f : 3.0f); // reflex is thick
+        glVertex3f(CGAL::to_double(p1.x()),
                    CGAL::to_double(p1.y()),
                    CGAL::to_double(p1.z()));
-        glVertex3f(CGAL::to_double(p2.x()) - offset_x,
+        glVertex3f(CGAL::to_double(p2.x()),
                    CGAL::to_double(p2.y()),
                    CGAL::to_double(p2.z()));
     }
     glEnd();
 }
 
-// --- 1-skeleton（頂点と辺のみ）を別位置に描画 ---
-// guards_set : Greedyアルゴリズムで選ばれたガード頂点の集合
 void draw_skeleton(const Surface_mesh& mesh,
-                   const std::set<Surface_mesh::Vertex_index>& guards_set,
-                   double offset_x = 0.0,   // x方向オフセット量
-                   float vertex_size = 6.0, // 頂点の大きさ
-                   float edge_width = 2.0)  // 辺の太さ
+                   float vertex_size = 4.0,
+                   float edge_width = 2.0)
 {
-    // --- エッジを白線で描画 ---
+    // edges
     glLineWidth(edge_width);
     glColor3f(1.0f, 1.0f, 1.0f);
     glBegin(GL_LINES);
@@ -450,28 +439,22 @@ void draw_skeleton(const Surface_mesh& mesh,
         Point p1 = mesh.point(mesh.source(h));
         Point p2 = mesh.point(mesh.target(h));
 
-        glVertex3f(CGAL::to_double(p1.x()) + offset_x,
+        glVertex3f(CGAL::to_double(p1.x()),
                    CGAL::to_double(p1.y()),
                    CGAL::to_double(p1.z()));
-        glVertex3f(CGAL::to_double(p2.x()) + offset_x,
+        glVertex3f(CGAL::to_double(p2.x()),
                    CGAL::to_double(p2.y()),
                    CGAL::to_double(p2.z()));
     }
     glEnd();
 
-    // --- 頂点を描画 ---
+    // vertices
     glPointSize(vertex_size);
     glBegin(GL_POINTS);
+    glColor3f(1.0f, 0.3f, 0.3f); // red
     for (auto v : mesh.vertices()) {
         Point p = mesh.point(v);
-
-        // 🔹 ガード頂点なら黄色、それ以外は赤
-        if (guards_set.find(v) != guards_set.end())
-            glColor3f(1.0f, 1.0f, 0.0f); // 黄色（ガード）
-        else
-            glColor3f(1.0f, 0.3f, 0.3f); // 赤（通常）
-
-        glVertex3f(CGAL::to_double(p.x()) + offset_x,
+        glVertex3f(CGAL::to_double(p.x()),
                    CGAL::to_double(p.y()),
                    CGAL::to_double(p.z()));
     }
@@ -479,21 +462,20 @@ void draw_skeleton(const Surface_mesh& mesh,
 }
 
 void draw_guard_edges(const Surface_mesh& mesh,
-                      const std::set<Surface_mesh::Edge_index>& guard_edges,
-                      double offset_x = 0.0)
+                      const std::set<Surface_mesh::Edge_index>& guard_edges)
 {
     glLineWidth(5.0f);
-    glColor3f(1.0f, 1.0f, 0.0f); // 黄色で表示
+    glColor3f(1.0f, 1.0f, 0.0f); // yellow
     glBegin(GL_LINES);
     for (auto edge : guard_edges) {
         auto h = mesh.halfedge(edge);
         Point p1 = mesh.point(mesh.source(h));
         Point p2 = mesh.point(mesh.target(h));
 
-        glVertex3f(CGAL::to_double(p1.x()) + offset_x,
+        glVertex3f(CGAL::to_double(p1.x()),
                    CGAL::to_double(p1.y()),
                    CGAL::to_double(p1.z()));
-        glVertex3f(CGAL::to_double(p2.x()) + offset_x,
+        glVertex3f(CGAL::to_double(p2.x()),
                    CGAL::to_double(p2.y()),
                    CGAL::to_double(p2.z()));
     }
@@ -541,8 +523,6 @@ std::map<Surface_mesh::Vertex_index, std::set<Surface_mesh::Vertex_index>> One_s
 
 
 //Greedy algorithm
-//   ・頂点ベース greedy
-//   ・未カバー頂点が 1 個だけ残ったとき特例処理
 
 std::set<Surface_mesh::Edge_index> GreedyEdgeGuards(
     const Surface_mesh& mesh,
@@ -611,7 +591,7 @@ bool is_same_polygon_face(const Surface_mesh& mesh, Surface_mesh::Face_index f1,
     Kernel::Vector_3 n1 = PMP::compute_face_normal(f1, mesh);
     Kernel::Vector_3 n2 = PMP::compute_face_normal(f2, mesh);
 
-    // 法線方向がほぼ同じ（1.0に近い）
+    // The normal vectors are almost parallel
     return std::fabs(CGAL::to_double(n1 * n2 - 1.0)) < 1e-6;
 }
 
@@ -625,7 +605,6 @@ void classify_edges_ver3(const Surface_mesh& mesh,
     int convex_edges = 0;
     int diagonal_edges = 0;
 
-    // 各クラスのカウント
     int classA_convex = 0, classA_reflex = 0;
     int classB_convex = 0, classB_reflex = 0;
     int classC_convex = 0, classC_reflex = 0;
@@ -634,10 +613,10 @@ void classify_edges_ver3(const Surface_mesh& mesh,
     for (auto edge : mesh.edges()) {
         auto h1 = mesh.halfedge(edge, 0);
 
-        // 境界エッジはスキップ
+        // skip border
         if (mesh.is_border(h1)) {
             real_edges++;
-            edge_colors[edge] = {1.0f, 1.0f, 1.0f}; // 白
+            edge_colors[edge] = {1.0f, 1.0f, 1.0f}; // white
             continue;
         }
 
@@ -645,11 +624,11 @@ void classify_edges_ver3(const Surface_mesh& mesh,
         auto f1 = mesh.face(h1);
         auto f2 = mesh.face(h2);
 
-        // 面の法線ベクトル
+        // normal
         Kernel::Vector_3 n1 = PMP::compute_face_normal(f1, mesh);
         Kernel::Vector_3 n2 = PMP::compute_face_normal(f2, mesh);
 
-        // 平面が同じなら対角線
+        // check diagonal
         double dot = CGAL::to_double(n1 * n2);
         if (std::fabs(dot - 1.0) < 1e-6) {
             diagonal_edges++;
@@ -658,7 +637,7 @@ void classify_edges_ver3(const Surface_mesh& mesh,
             continue;
         }
 
-        // --- 凹凸判定 ---
+        // check reflex or convex
         auto v_source = mesh.source(h1);
         auto v_other = mesh.target(mesh.next(h2));
         Kernel::Vector_3 test_vec = mesh.point(v_other) - mesh.point(v_source);
@@ -666,13 +645,13 @@ void classify_edges_ver3(const Surface_mesh& mesh,
         bool isReflex = (test_vec * n1 > 0);
         if (isReflex){
             reflex_edges++;
-            reflex_edges_set.insert(edge);  // ← reflexエッジを登録
+            reflex_edges_set.insert(edge);  // insert reflex edge
         }
         else
             convex_edges++;
         real_edges++;
 
-        // --- A～D クラス分類条件 ---
+        // classified
         double x1 = CGAL::to_double(n1.x());
         double y1 = CGAL::to_double(n1.y());
         double x2 = CGAL::to_double(n2.x());
@@ -691,29 +670,29 @@ void classify_edges_ver3(const Surface_mesh& mesh,
             ((x2 < 0 && y2 >= 0) && (x1 >= 0 && y1 < 0))
         );
 
-        // --- 色分けとカウント ---
+        // count and color
         if (isA) {
-            if (isReflex) { classA_reflex++; edge_colors[edge] = {1.0f, 0.5f, 0.5f}; } // Reflex A2（淡赤）
-            else          { classA_convex++; edge_colors[edge] = {1.0f, 0.0f, 0.0f}; } // Convex A1（赤）
+            if (isReflex) { classA_reflex++; edge_colors[edge] = {1.0f, 0.5f, 0.5f}; } // Reflex A2(pale red)
+            else          { classA_convex++; edge_colors[edge] = {1.0f, 0.0f, 0.0f}; } // Convex A1(red)
         }
         else if (isB) {
-            if (isReflex) { classB_reflex++; edge_colors[edge] = {0.5f, 0.5f, 1.0f}; } // Reflex B2（淡青）
-            else          { classB_convex++; edge_colors[edge] = {0.0f, 0.0f, 1.0f}; } // Convex B1（青）
+            if (isReflex) { classB_reflex++; edge_colors[edge] = {0.5f, 0.5f, 1.0f}; } // Reflex B2(pale blue)
+            else          { classB_convex++; edge_colors[edge] = {0.0f, 0.0f, 1.0f}; } // Convex B1(blue)
         }
         else if (isC) {
-            if (isReflex) { classC_reflex++; edge_colors[edge] = {0.5f, 1.0f, 0.5f}; } // Reflex C2（淡緑）
-            else          { classC_convex++; edge_colors[edge] = {0.0f, 1.0f, 0.0f}; } // Convex C1（緑）
+            if (isReflex) { classC_reflex++; edge_colors[edge] = {0.5f, 1.0f, 0.5f}; } // Reflex C2(pale green)
+            else          { classC_convex++; edge_colors[edge] = {0.0f, 1.0f, 0.0f}; } // Convex C1(green)
         }
         else if (isD) {
-            if (isReflex) { classD_reflex++; edge_colors[edge] = {1.0f, 1.0f, 0.5f}; } // Reflex D2（淡黄）
-            else          { classD_convex++; edge_colors[edge] = {1.0f, 1.0f, 0.0f}; } // Convex D1（黄）
+            if (isReflex) { classD_reflex++; edge_colors[edge] = {1.0f, 1.0f, 0.5f}; } // Reflex D2(pale yellow)
+            else          { classD_convex++; edge_colors[edge] = {1.0f, 1.0f, 0.0f}; } // Convex D1(yellow)
         }
         else {
             edge_colors[edge] = {1.0f, 1.0f, 1.0f};
         }
     }
 
-    // --- 結果表示 ---
+    // result
     std::cout << "[Edge Classification Result]\n";
     std::cout << "Total Edges    : " << mesh.number_of_edges() << "\n";
     std::cout << "Real Edges     : " << real_edges << "\n";
@@ -828,19 +807,19 @@ double evaluate_gap(
 {
     int m = 0;
 
-    // --- count edges without diagonal edges ---
+    // count edges without diagonal edges
     for (auto e : mesh.edges()) {
         if (!diagonal_edges.count(e))
             m++;
     }
 
-    // --- check score of 4 class ---
+    // check score of 4 class
     int score = compute_class_sum(mesh, L, diagonal_edges);
 
-    // --- 5m/6 ---
+    // 5m/6
     double boundary = (5.0 * m) / 6.0;
 
-    // --- gap ---
+    // gap
     double gap = boundary - score;
 
     std::cout << "[Result]\n";
@@ -1174,15 +1153,15 @@ int main() {
 
             // left:final_mesh
             glPushMatrix();
-            glTranslatef(-300, 0.0f, 0.0f);  // ← 左に寄せる
+            glTranslatef(-300, 0.0f, 0.0f);  // align to the left
             draw_mesh(final_mesh, face_colors, edge_colors, reflex_edges);
             glPopMatrix();
 
             // right:skelton + guard
             glPushMatrix();
-            glTranslatef(+300, 0.0f, 0.0f);  // ← 右に寄せる
-            draw_skeleton(final_mesh, {}, 60.0);    // ガード付き1-skeleton
-            draw_guard_edges(final_mesh, guard_edges, 60.0);    // ガード辺（黄色）
+            glTranslatef(+300, 0.0f, 0.0f);  // align to the right
+            draw_skeleton(final_mesh);    // 1-skelton
+            draw_guard_edges(final_mesh, guard_edges);    // edge guards(yellow)
             glPopMatrix();
 
 
