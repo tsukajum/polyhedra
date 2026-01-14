@@ -131,7 +131,7 @@ Nef_polyhedron make_Octahedron(Point center, double size) {
 }
 
 Nef_polyhedron make_Dodecahedron(Point center, double size){
-    double s = size / 2.0;
+    double s = size;
     const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
      std::vector<Point> points = {
         Point(center.x()+s, center.y()+s, center.z()+s),
@@ -191,7 +191,7 @@ Nef_polyhedron make_Dodecahedron(Point center, double size){
 }
 
 Nef_polyhedron make_Icosahedron(Point center, double size){
-    double s = size / 2.0;
+    double s = size;
     const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
     std::vector<Point> points = {
         Point(center.x(), center.y()+s, center.z()+phi*s),
@@ -659,16 +659,22 @@ void classify_edges_ver3(const Surface_mesh& mesh,
 
         bool isA = (y1 >= 0 && y2 >= 0);
         bool isB = (y1 < 0 && y2 < 0);
-        bool isC = (
-            (x1 >= 0 && x2 >= 0) ||
-            ((x1 >= 0 && y1 >= 0) && (x2 < 0 && y2 < 0)) ||
-            ((x2 >= 0 && y2 >= 0) && (x1 < 0 && y1 < 0))
-        );
-        bool isD = (
-            (x1 < 0 && x2 < 0) ||
-            ((x1 < 0 && y1 >= 0) && (x2 >= 0 && y2 < 0)) ||
-            ((x2 < 0 && y2 >= 0) && (x1 >= 0 && y1 < 0))
-        );
+        auto vA  = mesh.source(h1);
+        auto vB  = mesh.target(h1);
+        auto vC1 = mesh.target(mesh.next(h1));
+        auto vC2 = mesh.target(mesh.next(h2));
+        Kernel::Point_3 A = mesh.point(vA);
+        Kernel::Point_3 B = mesh.point(vB);
+        Kernel::Point_3 C1 = mesh.point(vC1);
+        Kernel::Point_3 C2 = mesh.point(vC2);
+        Kernel::Vector_3 up(0.0, 1.0, 0.0);
+        Kernel::Vector_3 e = B - A;
+        Kernel::Vector_3 m = CGAL::cross_product(e, up);
+        double s1 = CGAL::to_double(m * (C1 - A));
+        double s2 = CGAL::to_double(m * (C2 - A));
+        bool isC = (s1 < 0.0 && s2 < 0.0);
+        bool isD = (s1 > 0.0 && s2 > 0.0);
+
 
         // count and color
         if (isA) {
@@ -732,6 +738,7 @@ char classify_edge_class(
     double y1 = CGAL::to_double(n1.y());
     double x2 = CGAL::to_double(n2.x());
     double y2 = CGAL::to_double(n2.y());
+    
 
     // class A
     if (y1 >= 0 && y2 >= 0)
@@ -740,17 +747,25 @@ char classify_edge_class(
     // class B
     if (y1 < 0 && y2 < 0)
         return 'B';
-
+    auto vA  = mesh.source(h1);
+    auto vB  = mesh.target(h1);
+    auto vC1 = mesh.target(mesh.next(h1));
+    auto vC2 = mesh.target(mesh.next(h2));
+    Kernel::Point_3 A = mesh.point(vA);
+    Kernel::Point_3 B = mesh.point(vB);
+    Kernel::Point_3 C1 = mesh.point(vC1);
+    Kernel::Point_3 C2 = mesh.point(vC2);
+    Kernel::Vector_3 up(0.0, 1.0, 0.0);
+    Kernel::Vector_3 x = B - A;
+    Kernel::Vector_3 m = CGAL::cross_product(x, up);
+    double s1 = CGAL::to_double(m * (C1 - A));
+    double s2 = CGAL::to_double(m * (C2 - A));
     // class C
-    if ((x1 >= 0 && x2 >= 0) ||
-        ((x1 >= 0 && y1 >= 0) && (x2 < 0 && y2 < 0)) ||
-        ((x2 >= 0 && y2 >= 0) && (x1 < 0 && y1 < 0)))
+    if (s1 < 0.0 && s2 < 0.0)
         return 'C';
 
     // class D
-    if ((x1 < 0 && x2 < 0) ||
-        ((x1 < 0 && y1 >= 0) && (x2 >= 0 && y2 < 0)) ||
-        ((x2 < 0 && y2 >= 0) && (x1 >= 0 && y1 < 0)))
+    if (s1 > 0.0 && s2 > 0.0)
         return 'D';
 
     return 'X'; // something error
@@ -853,7 +868,7 @@ int main() {
     
     int valid = 0; // counter of loop
     const int TARGET1 = 1; // Number of loop
-    const int TARGET2 = 75; // Number of combinations
+    const int TARGET2 = 50; // Number of combinations
     int trials1 = 0; // counter of loop try
     const int MAX_TRIALS = 1000000000;
 
@@ -907,8 +922,8 @@ int main() {
 
         int success = 0;
         int trials2  = 0; // counter of conbine trying
-        int flag = 1; // flag for the polyhedron to use
-        //int flag = rand()%5; // if random
+        //int flag = 1; // flag for the polyhedron to use
+        int flag = rand()%5; // if random
         // counter of polyhedron
         int tetra = 0;
         int cube = 0; 
@@ -970,7 +985,7 @@ int main() {
 
         while (success < TARGET2 && trials2 < MAX_TRIALS) {
             trials2++;
-            //flag = rand()%5; // flag Update if random
+            flag = rand()%5; // flag Update if random
 
             c1 = rand()%(20+(2*success))+1;
             c2 = rand()%(20+(2*success))+1;
@@ -1129,9 +1144,6 @@ int main() {
     
 
     if(have_mesh_to_draw){
-        std::cout << "guard_edges size = " << guard_edges.size() << "\n";
-        std::cout << "diagonal_edges size = " << diagonal_edges.size() << "\n";
-        std::cout << "reflex_edges size   = " << reflex_edges.size() << "\n";
 
         while (!glfwWindowShouldClose(window)) {
             int width, height;
