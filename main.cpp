@@ -24,6 +24,15 @@ typedef Kernel::Point_3 Point;
 typedef Kernel::Plane_3 Plane;
 
 namespace PMP = CGAL::Polygon_mesh_processing;
+enum class EdgeClass : char { A='A', B='B', C='C', D='D', X='X' };
+
+struct EdgeInfo {
+    bool is_border = false;
+    bool is_diagonal = false;
+    bool is_reflex = false;   // falseならconvex扱い
+    EdgeClass cls = EdgeClass::X;
+};
+
 
 struct Color {
     float r, g, b;
@@ -406,7 +415,7 @@ void draw_mesh(const Surface_mesh& mesh,
             double len = std::sqrt(CGAL::to_double(avg_n.squared_length()));
             if (len > 1e-8) avg_n = avg_n / len;
 
-            double offset = 0.1;  // lift slightly
+            double offset = 0.3;  // lift slightly
             p1 = Point(p1.x() + avg_n.x() * offset,
                        p1.y() + avg_n.y() * offset,
                        p1.z() + avg_n.z() * offset);
@@ -595,11 +604,100 @@ bool is_same_polygon_face(const Surface_mesh& mesh, Surface_mesh::Face_index f1,
     return std::fabs(CGAL::to_double(n1 * n2 - 1.0)) < 1e-6;
 }
 
+std::map<Surface_mesh::Edge_index, EdgeInfo>
+classify_all_edges_once(const Surface_mesh& mesh)
+{
+    using E = Surface_mesh::Edge_index;
 
-void classify_edges_ver3(const Surface_mesh& mesh,
-                         std::map<Surface_mesh::Edge_index, Color>& edge_colors,
-                         std::set<Surface_mesh::Edge_index>& reflex_edges_set,
-                         std::set<Surface_mesh::Edge_index>& diagonal_edges_set) {
+    std::map<E, EdgeInfo> info;
+
+    for (auto edge : mesh.edges()) {
+        EdgeInfo ei;
+
+        auto h1 = mesh.halfedge(edge, 0);
+        ei.is_border = mesh.is_border(h1);
+
+        if (ei.is_border) {
+            // border
+            ei.cls = EdgeClass::X;
+            info[edge] = ei;
+            continue;
+        }
+
+        auto h2 = mesh.opposite(h1);
+        auto f1 = mesh.face(h1);
+        auto f2 = mesh.face(h2);
+
+        // face normals
+        Kernel::Vector_3 n1 = PMP::compute_face_normal(f1, mesh);
+        Kernel::Vector_3 n2 = PMP::compute_face_normal(f2, mesh);
+
+        // diagonal check
+        double dot = CGAL::to_double(n1 * n2);
+        if (std::fabs(dot - 1.0) < 1e-6) {
+            ei.is_diagonal = true;
+            ei.cls = EdgeClass::X;
+            info[edge] = ei;
+            continue;
+        }
+
+        // reflex/convex
+        auto v_source = mesh.source(h1);
+        auto v_other  = mesh.target(mesh.next(h2));
+        Kernel::Vector_3 test_vec = mesh.point(v_other) - mesh.point(v_source);
+        ei.is_reflex = (test_vec * n1 > 0);
+
+        double y1 = CGAL::to_double(n1.y());
+        double y2 = CGAL::to_double(n2.y());
+
+        if (y1 >= 0.0 && y2 >= 0.0) {
+            ei.cls = EdgeClass::A;
+            info[edge] = ei;
+            continue;
+        }
+        if (y1 < 0.0 && y2 < 0.0) {
+            ei.cls = EdgeClass::B;
+            info[edge] = ei;
+            continue;
+        }
+
+        // mixed case
+        auto vA  = mesh.source(h1);
+        auto vB  = mesh.target(h1);
+        auto vC1 = mesh.target(mesh.next(h1));
+        auto vC2 = mesh.target(mesh.next(h2));
+
+        Kernel::Point_3 A  = mesh.point(vA);
+        Kernel::Point_3 B  = mesh.point(vB);
+        Kernel::Point_3 C1 = mesh.point(vC1);
+        Kernel::Point_3 C2 = mesh.point(vC2);
+
+        Kernel::Vector_3 up(0.0, 1.0, 0.0);
+        Kernel::Vector_3 edge_vec = B - A;
+        Kernel::Vector_3 m = CGAL::cross_product(edge_vec, up);
+
+        if (CGAL::to_double(m.x()) < 0.0) m = -m;
+
+        double s1 = CGAL::to_double(m * (C1 - A));
+        double s2 = CGAL::to_double(m * (C2 - A));
+
+        if (s1 <= 0.0 && s2 <= 0.0)      ei.cls = EdgeClass::C;
+        else if (s1 >= 0.0 && s2 >= 0.0) ei.cls = EdgeClass::D;
+        else                             ei.cls = EdgeClass::X;
+
+        info[edge] = ei;
+    }
+
+    return info;
+}
+
+void build_from_edgeinfo(
+    const Surface_mesh& mesh,
+    const std::map<Surface_mesh::Edge_index, EdgeInfo>& info,
+    std::map<Surface_mesh::Edge_index, Color>& edge_colors,
+    std::set<Surface_mesh::Edge_index>& reflex_edges_set,
+    std::set<Surface_mesh::Edge_index>& diagonal_edges_set)
+{
     int real_edges = 0;
     int reflex_edges = 0;
     int convex_edges = 0;
@@ -610,95 +708,63 @@ void classify_edges_ver3(const Surface_mesh& mesh,
     int classC_convex = 0, classC_reflex = 0;
     int classD_convex = 0, classD_reflex = 0;
 
+    edge_colors.clear();
+    reflex_edges_set.clear();
+    diagonal_edges_set.clear();
+
     for (auto edge : mesh.edges()) {
-        auto h1 = mesh.halfedge(edge, 0);
+        auto it = info.find(edge);
+        if (it == info.end()) continue;
+        const EdgeInfo& ei = it->second;
 
-        // skip border
-        if (mesh.is_border(h1)) {
+        // border
+        if (ei.is_border) {
             real_edges++;
-            edge_colors[edge] = {1.0f, 1.0f, 1.0f}; // white
+            edge_colors[edge] = {1.0f, 1.0f, 1.0f};
             continue;
         }
 
-        auto h2 = mesh.opposite(h1);
-        auto f1 = mesh.face(h1);
-        auto f2 = mesh.face(h2);
-
-        // normal
-        Kernel::Vector_3 n1 = PMP::compute_face_normal(f1, mesh);
-        Kernel::Vector_3 n2 = PMP::compute_face_normal(f2, mesh);
-
-        // check diagonal
-        double dot = CGAL::to_double(n1 * n2);
-        if (std::fabs(dot - 1.0) < 1e-6) {
+        if (ei.is_diagonal) {
             diagonal_edges++;
-            edge_colors[edge] = {0.7f, 0.7f, 0.7f};
             diagonal_edges_set.insert(edge);
+            edge_colors[edge] = {0.7f, 0.7f, 0.7f};
             continue;
         }
 
-        // check reflex or convex
-        auto v_source = mesh.source(h1);
-        auto v_other = mesh.target(mesh.next(h2));
-        Kernel::Vector_3 test_vec = mesh.point(v_other) - mesh.point(v_source);
-
-        bool isReflex = (test_vec * n1 > 0);
-        if (isReflex){
-            reflex_edges++;
-            reflex_edges_set.insert(edge);  // insert reflex edge
-        }
-        else
-            convex_edges++;
         real_edges++;
 
-        // classified
-        double x1 = CGAL::to_double(n1.x());
-        double y1 = CGAL::to_double(n1.y());
-        double x2 = CGAL::to_double(n2.x());
-        double y2 = CGAL::to_double(n2.y());
+        if (ei.is_reflex) {
+            reflex_edges++;
+            reflex_edges_set.insert(edge);
+        } else {
+            convex_edges++;
+        }
 
-        bool isA = (y1 >= 0 && y2 >= 0);
-        bool isB = (y1 < 0 && y2 < 0);
-        auto vA  = mesh.source(h1);
-        auto vB  = mesh.target(h1);
-        auto vC1 = mesh.target(mesh.next(h1));
-        auto vC2 = mesh.target(mesh.next(h2));
-        Kernel::Point_3 A = mesh.point(vA);
-        Kernel::Point_3 B = mesh.point(vB);
-        Kernel::Point_3 C1 = mesh.point(vC1);
-        Kernel::Point_3 C2 = mesh.point(vC2);
-        Kernel::Vector_3 up(0.0, 1.0, 0.0);
-        Kernel::Vector_3 e = B - A;
-        Kernel::Vector_3 m = CGAL::cross_product(e, up);
-        double s1 = CGAL::to_double(m * (C1 - A));
-        double s2 = CGAL::to_double(m * (C2 - A));
-        bool isC = (s1 < 0.0 && s2 < 0.0);
-        bool isD = (s1 > 0.0 && s2 > 0.0);
-
-
-        // count and color
-        if (isA) {
-            if (isReflex) { classA_reflex++; edge_colors[edge] = {1.0f, 0.5f, 0.5f}; } // Reflex A2(pale red)
-            else          { classA_convex++; edge_colors[edge] = {1.0f, 0.0f, 0.0f}; } // Convex A1(red)
-        }
-        else if (isB) {
-            if (isReflex) { classB_reflex++; edge_colors[edge] = {0.5f, 0.5f, 1.0f}; } // Reflex B2(pale blue)
-            else          { classB_convex++; edge_colors[edge] = {0.0f, 0.0f, 1.0f}; } // Convex B1(blue)
-        }
-        else if (isC) {
-            if (isReflex) { classC_reflex++; edge_colors[edge] = {0.5f, 1.0f, 0.5f}; } // Reflex C2(pale green)
-            else          { classC_convex++; edge_colors[edge] = {0.0f, 1.0f, 0.0f}; } // Convex C1(green)
-        }
-        else if (isD) {
-            if (isReflex) { classD_reflex++; edge_colors[edge] = {1.0f, 1.0f, 0.5f}; } // Reflex D2(pale yellow)
-            else          { classD_convex++; edge_colors[edge] = {1.0f, 1.0f, 0.0f}; } // Convex D1(yellow)
-        }
-        else {
-            edge_colors[edge] = {1.0f, 1.0f, 1.0f};
+        // reflex/convex
+        switch (ei.cls) {
+            case EdgeClass::A:
+                if (ei.is_reflex) { classA_reflex++; edge_colors[edge] = {1.0f, 0.5f, 0.5f}; }
+                else              { classA_convex++; edge_colors[edge] = {1.0f, 0.0f, 0.0f}; }
+                break;
+            case EdgeClass::B:
+                if (ei.is_reflex) { classB_reflex++; edge_colors[edge] = {0.5f, 0.5f, 1.0f}; }
+                else              { classB_convex++; edge_colors[edge] = {0.0f, 0.0f, 1.0f}; }
+                break;
+            case EdgeClass::C:
+                if (ei.is_reflex) { classC_reflex++; edge_colors[edge] = {0.5f, 1.0f, 0.5f}; }
+                else              { classC_convex++; edge_colors[edge] = {0.0f, 1.0f, 0.0f}; }
+                break;
+            case EdgeClass::D:
+                if (ei.is_reflex) { classD_reflex++; edge_colors[edge] = {1.0f, 1.0f, 0.5f}; }
+                else              { classD_convex++; edge_colors[edge] = {1.0f, 1.0f, 0.0f}; }
+                break;
+            default:
+                // X は白
+                edge_colors[edge] = {1.0f, 1.0f, 1.0f};
+                break;
         }
     }
 
-    // result
     std::cout << "[Edge Classification Result]\n";
     std::cout << "Total Edges    : " << mesh.number_of_edges() << "\n";
     std::cout << "Real Edges     : " << real_edges << "\n";
@@ -711,11 +777,13 @@ void classify_edges_ver3(const Surface_mesh& mesh,
     std::cout << "A2 (Y>=0 both) Reflex : " << classA_reflex << "\n";
     std::cout << "B1 (Y<0 both) Convex : " << classB_convex << "\n";
     std::cout << "B2 (Y<0 both) Reflex : " << classB_reflex << "\n";
-    std::cout << "C1 (X>=0 or mixed +Y/-Y) Convex : " << classC_convex << "\n";
-    std::cout << "C2 (X>=0 or mixed +Y/-Y) Reflex : " << classC_reflex << "\n";
-    std::cout << "D1 (X<0 or mixed +Y/-Y) Convex : " << classD_convex << "\n";
-    std::cout << "D2 (X<0 or mixed +Y/-Y) Reflex : " << classD_reflex << "\n\n";
+    std::cout << "C1 (open to x<0 direction) Convex : " << classC_convex << "\n";
+    std::cout << "C2 (open to x<0 direction) Reflex : " << classC_reflex << "\n";
+    std::cout << "D1 (open to x>=0 direction) Convex : " << classD_convex << "\n";
+    std::cout << "D2 (open to x>=0 direction) Reflex : " << classD_reflex << "\n\n";
 }
+
+
 
 char classify_edge_class(
     const Surface_mesh& mesh,
@@ -758,50 +826,47 @@ char classify_edge_class(
     Kernel::Vector_3 up(0.0, 1.0, 0.0);
     Kernel::Vector_3 x = B - A;
     Kernel::Vector_3 m = CGAL::cross_product(x, up);
+    if (CGAL::to_double(m.x()) < 0.0) m = -m;
     double s1 = CGAL::to_double(m * (C1 - A));
     double s2 = CGAL::to_double(m * (C2 - A));
     // class C
-    if (s1 < 0.0 && s2 < 0.0)
+    if (s1 <= 0.0 && s2 <= 0.0)
         return 'C';
 
     // class D
-    if (s1 > 0.0 && s2 > 0.0)
+    if (s1 >= 0.0 && s2 >= 0.0)
         return 'D';
 
     return 'X'; // something error
 }
 
-
 int compute_class_sum(
     const Surface_mesh& mesh,
     const std::set<Surface_mesh::Edge_index>& L,
-    const std::set<Surface_mesh::Edge_index>& diagonal_edges)
+    const std::map<Surface_mesh::Edge_index, EdgeInfo>& info)
 {
     int l = 0;
     int cA = 0, cB = 0, cC = 0, cD = 0;
 
-    for (auto e : mesh.edges()) 
+    for (auto e : mesh.edges())
     {
-        // diagonal
-        if (diagonal_edges.count(e))
-            continue;
+        auto it = info.find(e);
+        if (it == info.end()) continue;
+        const EdgeInfo& ei = it->second;
 
-        // L
-        if (L.count(e)) {
-            l++;
-            continue;
+        if (ei.is_diagonal) continue;
+
+        if (L.count(e)) { l++; continue; }
+
+        switch (ei.cls) {
+            case EdgeClass::A: cA++; break;
+            case EdgeClass::B: cB++; break;
+            case EdgeClass::C: cC++; break;
+            case EdgeClass::D: cD++; break;
+            default:
+                // std::cout << "classified error\n";
+                break;
         }
-
-        char cl = classify_edge_class(mesh, e);
-
-        if      (cl == 'A') cA++;
-        else if (cl == 'B') cB++;
-        else if (cl == 'C') cC++;
-        else if (cl == 'D') cD++;
-        else {
-            std::cout << "classified error\n";
-            continue;
-        } // X is error
     }
 
     int maxc = std::max({cA, cB, cC, cD});
@@ -814,27 +879,22 @@ int compute_class_sum(
 }
 
 
-
 double evaluate_gap(
     const Surface_mesh& mesh,
     const std::set<Surface_mesh::Edge_index>& L,
-    const std::set<Surface_mesh::Edge_index>& diagonal_edges)
+    const std::map<Surface_mesh::Edge_index, EdgeInfo>& info,
+    int& out_m,
+    int& out_score,
+    double& out_boundary)
 {
     int m = 0;
-
-    // count edges without diagonal edges
     for (auto e : mesh.edges()) {
-        if (!diagonal_edges.count(e))
-            m++;
+        auto it = info.find(e);
+        if (it != info.end() && !it->second.is_diagonal) m++;
     }
 
-    // check score of 4 class
-    int score = compute_class_sum(mesh, L, diagonal_edges);
-
-    // 5m/6
+    int score = compute_class_sum(mesh, L, info);
     double boundary = (5.0 * m) / 6.0;
-
-    // gap
     double gap = boundary - score;
 
     std::cout << "[Result]\n";
@@ -842,10 +902,15 @@ double evaluate_gap(
     std::cout << "score(L) = " << score << "\n";
     std::cout << "5m/6 = " << boundary << "\n";
     std::cout << "gap = (5m/6 - score) = " << gap << "\n";
-    if(gap > 0) std::cout << "true\n";
-    else std::cout << "false\n";
+    std::cout << (gap > 0 ? "true\n" : "false\n");
+
+    out_m = m;
+    out_score = score;
+    out_boundary = boundary;
     return gap;
 }
+
+
 
 void write_csv(const std::string& filename, int m, int score, double boundary, double gap)
 {
@@ -867,8 +932,8 @@ bool aabb_inside(const AABB& inner, const AABB& outer) {
 int main() {
     
     int valid = 0; // counter of loop
-    const int TARGET1 = 1; // Number of loop
-    const int TARGET2 = 50; // Number of combinations
+    const int TARGET1 = 220; // Number of loop
+    const int TARGET2 = 42; // Number of combinations
     int trials1 = 0; // counter of loop try
     const int MAX_TRIALS = 1000000000;
 
@@ -881,15 +946,17 @@ int main() {
 
     bool have_mesh_to_draw = false;
 
-    
+    /*
     if (!glfwInit())
         return -1;
 
-    GLFWwindow* window = glfwCreateWindow(1600, 1200, "CGAL Viewer", NULL, NULL);
+    
+        GLFWwindow* window = glfwCreateWindow(1600, 1200, "CGAL Viewer", NULL, NULL);
     if (!window) {
         glfwTerminate();
         return -1;
     }
+    
 
     glfwMakeContextCurrent(window);
     const GLubyte* renderer = glGetString(GL_RENDERER);
@@ -900,13 +967,13 @@ int main() {
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
-
+    */
 
     // create csv file
-    std::string csv_name = "Test_name.csv";
+    std::string csv_name = "test_name.csv";
     std::ofstream file(csv_name);
     // header
-    file << "m,score,5m/6,gap\n"; 
+    std::ofstream(csv_name, std::ios::app) << "m,score,5m/6,gap\n";
 
     std::srand(static_cast<unsigned>(time(NULL)));
 
@@ -922,8 +989,8 @@ int main() {
 
         int success = 0;
         int trials2  = 0; // counter of conbine trying
-        //int flag = 1; // flag for the polyhedron to use
-        int flag = rand()%5; // if random
+        int flag = 3; // flag for the polyhedron to use
+        //int flag = rand()%5; // if random
         // counter of polyhedron
         int tetra = 0;
         int cube = 0; 
@@ -971,6 +1038,9 @@ int main() {
             cube++;
             er++;
         }
+        if (!polyhedron.is_simple())
+            continue;
+
         double r0 = size * 2.0;
         AABB current_box{
         CGAL::to_double(first_center.x()) - r0,
@@ -985,7 +1055,7 @@ int main() {
 
         while (success < TARGET2 && trials2 < MAX_TRIALS) {
             trials2++;
-            flag = rand()%5; // flag Update if random
+            //flag = rand()%5; // flag Update if random
 
             c1 = rand()%(20+(2*success))+1;
             c2 = rand()%(20+(2*success))+1;
@@ -1029,6 +1099,8 @@ int main() {
             if (!polyhedron.intersection(New_polyhedron).is_empty()) {
 
                 try {
+                    Nef_polyhedron inter = polyhedron.intersection(New_polyhedron);
+                    if (inter.interior().is_empty()) continue;
                     Nef_polyhedron tmp = polyhedron + New_polyhedron;
 
                     if (tmp.is_simple()){
@@ -1066,25 +1138,9 @@ int main() {
         std::cout << "Tetrahedra: " << tetra << " merged\n";
         std::cout << "Cube: " << cube << " merged\n";
         std::cout << "Octahedra: " << octa << " merged\n";
-        std::cout << "Icosahedra: " << icosa << " merged\n";
         std::cout << "Dodecahedra: " << dodeca << " merged\n";
-        std::cout << "error:" << er << "\n"; 
-
-
-        CGAL::convert_nef_polyhedron_to_polygon_mesh(polyhedron, final_mesh);
-
-        // Added this 2 lines, for making triangulation and drawing certainly.
-        assign_random_face_colors(final_mesh);
-        CGAL::Polygon_mesh_processing::triangulate_faces(final_mesh);
-
-        triangulate_faces_with_colors(final_mesh);
-
-
-        if (!PMP::is_outward_oriented(final_mesh)) {
-        PMP::reverse_face_orientations(final_mesh);
-        }
-       
-        
+        std::cout << "Icosahedra: " << icosa << " merged\n";
+        std::cout << "error:" << er << "\n";         
         
 
         try {
@@ -1096,6 +1152,7 @@ int main() {
 
         if (!CGAL::is_triangle_mesh(final_mesh)) {
             try {
+                assign_random_face_colors(final_mesh);
                 PMP::triangulate_faces(final_mesh);
                 triangulate_faces_with_colors(final_mesh);
             } catch (...) {
@@ -1108,20 +1165,20 @@ int main() {
             PMP::reverse_face_orientations(final_mesh);
         }
 
+        // 1) classify once
+        auto edge_info = classify_all_edges_once(final_mesh);
 
-        classify_edges_ver3(final_mesh, edge_colors, reflex_edges, diagonal_edges);
+        // 2) build sets/colors/stats from cached info
+        build_from_edgeinfo(final_mesh, edge_info, edge_colors, reflex_edges, diagonal_edges);
 
-        auto graph = One_skelton(final_mesh);
+        // 3) greedy
         guard_edges = GreedyEdgeGuards(final_mesh, diagonal_edges);
 
-        double gap = evaluate_gap(final_mesh, guard_edges, diagonal_edges);
-    
-        int m = 0;
-        for (auto e : final_mesh.edges())
-            if (!diagonal_edges.count(e)) m++;
+        // 4) evaluate gap using cached info
+        int m = 0, score = 0;
+        double boundary = 0.0;
+        double gap = evaluate_gap(final_mesh, guard_edges, edge_info, m, score, boundary);
 
-        int score = compute_class_sum(final_mesh, guard_edges, diagonal_edges);
-        double boundary = (5.0 * m) / 6.0;
 
         if (m < 1000){
             continue;
@@ -1142,7 +1199,7 @@ int main() {
         have_mesh_to_draw = true;
     }
     
-
+    /*
     if(have_mesh_to_draw){
 
         while (!glfwWindowShouldClose(window)) {
@@ -1183,6 +1240,7 @@ int main() {
     }
     glfwDestroyWindow(window);
     glfwTerminate();    
+    */
 
     return 0;
 }
